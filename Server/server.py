@@ -1,89 +1,131 @@
 import socket
 import sys
-import traceback
 from threading import Thread
 from time import sleep
 import random
+from numpy import base_repr
+import select
+import queue
 
+class Server(Thread):
+    work = True
+    clients = {}
+    tokens = []
 
-class Server():
-    clients = []
-    user_id_list = []
+    inputs = []
+    outputs = []
+    message_queues = {}
 
+    def __init__(self):
+        super().__init__()
+        self.start_server()
 
     def start_server(self):
-        host = "localhost"
-        port = 8888         # arbitrary non-privileged port
+        host = "62.109.29.169" #62.109.29.169
+        port = 20555  # arbitrary non-privileged port
 
-        self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # SO_REUSEADDR flag tells the kernel to reuse a local socket in TIME_WAIT state, without waiting for its natural timeout to expire
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.setblocking(False)
         print("Socket created")
 
         try:
-            self.soc.bind((host, port))
+            self.server.bind((host, port))
         except:
             print("Bind failed. Error : " + str(sys.exc_info()))
             sys.exit()
 
-        self.soc.listen(5)       # queue up to 5 requests
+        self.server.listen(5)  # queue up to 5 requests
         print("Socket now listening")
+        self.inputs.append(self.server)
 
-        # infinite loop- do not reset for every requests
-        while True:
-            connection, address = self.soc.accept()
-            ip, port = str(address[0]), str(address[1])
-            print("Connected with " + ip + ":" + port)
-            rand_id  = random.randint(100000000, 999999999)
-            print(rand_id in self.user_id_list)
-            while rand_id in self.user_id_list:
-                rand_id = random.randint(100000000, 999999999)
-            self.user_id_list.append(str(rand_id))
-            client = ClientThread(connection, ip, port, 5120, str(rand_id))
-            self.clients.append(client)
-            client.start()
-
-    def stop_server(self):
-        self.soc.close()
-
-    def send(self, user_id, data):
-        id = self.user_id_list.index(user_id)
-        self.clients[id].send(data)
-
-    def send_to_all(self, data):
-        for client in self.clients:
-            client.send(data)
-
-
-class ClientThread(Thread):
-    work = True
-
-    def __init__(self, connection, ip, port, max_buffer_size, user_id):
-        super().__init__()
-        self.daemon = True
-        self.connection = connection
-        self.ip = ip
-        self.port = port
-        self.max_buffer_size = max_buffer_size
-        self.user_id = user_id
-        print('user_id: ', user_id)
 
     def run(self):
-        while self.work:
-            client_input = self.receive_input()
-            self.send('Ok'.encode('utf-8'))
-            print(client_input)
+        while self.inputs:
+            readable, writable, exceptional = select.select(
+                self.inputs, self.outputs, self.inputs)
+            for s in readable:
+                if s is self.server:
+                    connection, client_address = s.accept()
+                    connection.setblocking(0)
+                    print('Conn adress: ', client_address[0], client_address[1])
+                    self.inputs.append(connection)
+                    self.clients[connection] = Client(self, connection, client_address, self.generate_token())
+                else:
+                    try:
+                        data = s.recv(1024)
+                        if data:
+                            if data != b'disconnect':
+                                self.clients[s].get_data_handler(data)
+                            else:
+                                self.client_disconnect(s)
+                    except:
+                        self.client_disconnect(s)
 
-    def receive_input(self):
-        print('wait input')
-        client_input = self.connection.recv(self.max_buffer_size)
-        client_input_size = sys.getsizeof(client_input)
+            for s in writable:
+                try:
+                    next_msg = self.clients[s].q.get_nowait()
+                except queue.Empty:
+                    self.outputs.remove(s)
+                else:
+                    s.send(next_msg)
 
-        if client_input_size > self.max_buffer_size:
-            print("The input size is greater than expected {}".format(client_input_size))
+            for s in exceptional:
+                self.inputs.remove(s)
+                if s in self.outputs:
+                    self.outputs.remove(s)
+                s.close()
+                del self.clients[s]
+            sleep(0.01)
 
-        decoded_input = client_input.decode("utf8").rstrip()  # decode and strip end of line
+    def generate_token(self):
+        while True:
+            token = random.randint(10000000000, 99999999999)
+            token = base_repr(token, 36)
+            if not token in self.tokens:
+                self.tokens.append(token)
+                break
+        return token
 
-        return decoded_input
+    def get_client_list(self):
+        addresses = []
+        for conn, client in self.clients.items():
+            addresses.append(client.get_adress())
+        return addresses
+
+    def client_disconnect(self, s):
+        if s in self.outputs:
+            self.outputs.remove(s)
+        self.inputs.remove(s)
+        s.close()
+        print(self.clients[s].get_address() + ' disconnected')
+        del self.clients[s]
+
+    def stop_server(self):
+        self.work = False
+        self.server.close()
+
+class Client:
+    work = True
+    connection = None
+
+    def __init__(self, server, connection, address, token):
+        self.server = server
+        self.connection = connection
+        self.ip = address[0]
+        self.port = address[1]
+        self.token = token
+        self.q = queue.Queue()
+        print('token: ', token)
+
+    def get_data_handler(self, data):
+        print(self.get_address() + ' > ' + str(data))
+        self.send(b'Ok')
 
     def send(self, data):
-        self.connection.send(data)
+        if not self.connection in self.server.outputs:
+            self.server.outputs.append(self.connection)
+        self.q.put(data)
+
+    def get_address(self):
+        return str(self.ip) + ':' + str(self.port)

@@ -4,8 +4,8 @@ import sys
 
 def main():
     soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    host = "62.109.29.169"
-    port = 8888
+    host = "62.109.29.169" #62.109.29.169
+    port = 20555
 
     try:
         soc.connect((host, port))
