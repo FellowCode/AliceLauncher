@@ -8,8 +8,12 @@ import logging
 from Server.server import Server
 import json
 
+#импорт набора фраз
+from Server.alice_client import AliceClient
+from Server.phrases import Phrases
+import random
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(filename='alice.log', level=logging.DEBUG)
 
 #Запуск сервера
 server = Server()
@@ -40,55 +44,21 @@ def alice_handler():
         }
     }
 
-    handle_dialog(request.json, response)
+    user_id = request.json['session']['user_id']
+
+    if request.json['session']['new']:
+        #Если новая сессия создаем класс клиента
+        sessionStorage[user_id] = AliceClient(user_id)
+
+    #Вызываем обработчик диалога
+    response = sessionStorage[user_id].handle_dialog(request.json, response)
 
     logging.info('Response: %r', response)
 
     return json.dumps(response, ensure_ascii=False, indent=2)
 
 
-def handle_dialog(req, res):
-    user_id = req['session']['user_id']
 
-    if req['session']['new']:
-        # Это новый пользователь.
-        # Инициализируем сессию и поприветствуем его.
-
-        sessionStorage[user_id] = {
-            'suggests': [
-                "Выключить экран",
-                "Звук потише",
-                "Звук погромче",
-            ]
-        }
-
-        res['response']['text'] = 'Привет! Что желаете?'
-        res['response']['buttons'] = get_suggests(user_id)
-        return
-
-def get_suggests(user_id):
-    session = sessionStorage[user_id]
-
-    # Выбираем две первые подсказки из массива.
-    suggests = [
-        {'title': suggest, 'hide': True}
-        for suggest in session['suggests'][:2]
-    ]
-
-    # Убираем первую подсказку, чтобы подсказки менялись каждый раз.
-    session['suggests'] = session['suggests'][1:]
-    sessionStorage[user_id] = session
-
-    # Если осталась только одна подсказка, предлагаем подсказку
-    # со ссылкой на Яндекс.Маркет.
-    if len(suggests) < 2:
-        suggests.append({
-            "title": "Ладно",
-            "url": "https://market.yandex.ru/search?text=слон",
-            "hide": True
-        })
-
-    return suggests
 
 
 app.wsgi_app = ProxyFix(app.wsgi_app)

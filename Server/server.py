@@ -6,6 +6,17 @@ import random
 from numpy import base_repr
 import select
 import queue
+from collections import namedtuple
+import pickle
+import logging
+from pathlib import Path
+
+#Данные синхронизации приложения и устройств
+user_data_path = 'userdata.al'
+User = namedtuple('User', 'app_token user_ids')
+
+#Логирование
+logging.basicConfig(filename='server.log', level=logging.DEBUG)
 
 class Server(Thread):
     work = True
@@ -14,44 +25,59 @@ class Server(Thread):
 
     inputs = []
     outputs = []
-    message_queues = {}
+
+    user_datas = []
 
     def __init__(self):
         super().__init__()
         self.start_server()
+        self.load_user_data()
 
     def start_server(self):
-        host = "62.109.29.169" #62.109.29.169
+        host = "localhost" #62.109.29.169
         port = 20555  # arbitrary non-privileged port
 
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.setblocking(False)
-        print("Socket created")
 
         try:
             self.server.bind((host, port))
         except:
+            logging.info('Error: %r', str(sys.exc_info()))
             print("Bind failed. Error : " + str(sys.exc_info()))
             sys.exit()
 
-        self.server.listen(5)  # queue up to 5 requests
+        self.server.listen(1000)  # queue up to 5 requests
         print("Socket now listening")
         self.inputs.append(self.server)
 
+    def save_user_data(self, app_token, ):
+        # Сохранение файла данных синхронизации приложения и устройств
+        with open(user_data_path, 'wb') as f:
+            pickle.dump(self.user_datas, f)
+
+    def load_user_data(self):
+        #Чтение из файла данных синхронизации приложения и устройств
+        if Path(user_data_path).exists():
+            with open(user_data_path, 'rb') as f:
+                self.user_datas = pickle.load(f)
 
     def run(self):
         while self.inputs:
             readable, writable, exceptional = select.select(
                 self.inputs, self.outputs, self.inputs)
             for s in readable:
+                #Входящие данные
                 if s is self.server:
+                    #Если от сокета сервера, принимаем подключение
                     connection, client_address = s.accept()
                     connection.setblocking(0)
                     print('Conn adress: ', client_address[0], client_address[1])
                     self.inputs.append(connection)
                     self.clients[connection] = Client(self, connection, client_address, self.generate_token())
                 else:
+                    #Если от сокета клиента, принимаем данные
                     try:
                         data = s.recv(1024)
                         if data:
@@ -63,6 +89,7 @@ class Server(Thread):
                         self.client_disconnect(s)
 
             for s in writable:
+                #Исходящие данные
                 try:
                     next_msg = self.clients[s].q.get_nowait()
                 except queue.Empty:
@@ -71,6 +98,7 @@ class Server(Thread):
                     s.send(next_msg)
 
             for s in exceptional:
+                #При ошибке на сокете исключаем его
                 self.inputs.remove(s)
                 if s in self.outputs:
                     self.outputs.remove(s)
