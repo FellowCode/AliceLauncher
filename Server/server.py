@@ -6,32 +6,33 @@ import random
 from numpy import base_repr
 import select
 import queue
-from collections import namedtuple
 import pickle
 import logging
 from pathlib import Path
+from datetime import datetime
 
 #Данные синхронизации приложения и устройств
-user_data_path = 'userdata.al'
-User = namedtuple('User', 'app_token user_ids')
+user_data_path = '/data/userdata.al'
+app_tokens_path = '/data/apptokens.al'
 
 #Логирование
 logging.basicConfig(filename='server.log', level=logging.DEBUG)
 
 class Server(Thread):
-    work = True
     clients = {}
-    tokens = []
+    app_tokens = []
 
     inputs = []
     outputs = []
 
-    user_datas = []
+    #Данные синхронизаций формата app_token: [user_id0, user_id1...]
+    user_datas = {}
 
     def __init__(self):
         super().__init__()
         self.start_server()
         self.load_user_data()
+        self.load_app_tokens()
 
     def start_server(self):
         host = "localhost" #62.109.29.169
@@ -51,11 +52,17 @@ class Server(Thread):
         self.server.listen(1000)  # queue up to 5 requests
         print("Socket now listening")
         self.inputs.append(self.server)
+        logging.info('Server started: %r', datetime.now().strftime('%Y.%m.%d %H:%M'))
 
-    def save_user_data(self, app_token, ):
+    def save_user_data(self):
         # Сохранение файла данных синхронизации приложения и устройств
         with open(user_data_path, 'wb') as f:
             pickle.dump(self.user_datas, f)
+
+    def save_app_tokens(self):
+        # Сохранение списка токенов всех приложений
+        with open(app_tokens_path, 'wb') as f:
+            pickle.dump(self.app_tokens, f)
 
     def load_user_data(self):
         #Чтение из файла данных синхронизации приложения и устройств
@@ -63,7 +70,14 @@ class Server(Thread):
             with open(user_data_path, 'rb') as f:
                 self.user_datas = pickle.load(f)
 
+    def load_app_tokens(self):
+        #Чтение из файла данных синхронизации приложения и устройств
+        if Path(app_tokens_path).exists():
+            with open(app_tokens_path, 'rb') as f:
+                self.app_tokens = pickle.load(f)
+
     def run(self):
+        #Мониторинг сокетов
         while self.inputs:
             readable, writable, exceptional = select.select(
                 self.inputs, self.outputs, self.inputs)
@@ -73,7 +87,7 @@ class Server(Thread):
                     #Если от сокета сервера, принимаем подключение
                     connection, client_address = s.accept()
                     connection.setblocking(0)
-                    print('Conn adress: ', client_address[0], client_address[1])
+                    print('Conn adress: ', ':'.join(map(str, client_address)))
                     self.inputs.append(connection)
                     self.clients[connection] = Client(self, connection, client_address, self.generate_token())
                 else:
@@ -86,6 +100,7 @@ class Server(Thread):
                             else:
                                 self.client_disconnect(s)
                     except:
+                        #При ошибке отключаем клиента
                         self.client_disconnect(s)
 
             for s in writable:
@@ -99,19 +114,15 @@ class Server(Thread):
 
             for s in exceptional:
                 #При ошибке на сокете исключаем его
-                self.inputs.remove(s)
-                if s in self.outputs:
-                    self.outputs.remove(s)
-                s.close()
-                del self.clients[s]
+                self.client_disconnect(s)
             sleep(0.01)
 
     def generate_token(self):
         while True:
-            token = random.randint(10000000000, 99999999999)
+            token = random.randint(1000000000000, 9999999999999)
             token = base_repr(token, 36)
-            if not token in self.tokens:
-                self.tokens.append(token)
+            if not token in self.app_tokens:
+                self.app_tokens.append(token)
                 break
         return token
 
@@ -130,20 +141,28 @@ class Server(Thread):
         del self.clients[s]
 
     def stop_server(self):
-        self.work = False
         self.server.close()
+        self.inputs = None
+
+    def user_is_sync(self, app_token, user_id):
+        if self.user_datas[app_token]:
+            self.user_datas[app_token].append(user_id)
+        else:
+            self.user_datas[app_token] = [user_id]
 
 class Client:
     work = True
     connection = None
+    app_token = None
 
     def __init__(self, server, connection, address, token):
         self.server = server
         self.connection = connection
         self.ip = address[0]
         self.port = address[1]
-        self.token = token
+        self.app_token = token
         self.q = queue.Queue()
+        self.send(self.app_token.encode('utf-8'))
         print('token: ', token)
 
     def get_data_handler(self, data):
