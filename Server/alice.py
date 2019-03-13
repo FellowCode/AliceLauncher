@@ -4,16 +4,15 @@ from __future__ import unicode_literals
 from flask import Flask, request
 from werkzeug.contrib.fixers import ProxyFix
 import sys
-import logging
 from Server.server import Server
 import json
 
+#Настройка логирования
+from Server.s_log import setup_logger
+alice_log = setup_logger('alice logger', 'alice.log')
+
 #импорт набора фраз
 from Server.alice_client import AliceClient
-from Server.phrases import Phrases
-import random
-
-logging.basicConfig(filename='alice.log', level=logging.DEBUG)
 
 #Запуск сервера
 server = Server()
@@ -23,6 +22,7 @@ server.start()
 sessionStorage = {}
 
 app = Flask(__name__)
+
 
 @app.route('/clients')
 def get_clients():
@@ -34,7 +34,7 @@ def get_clients():
 
 @app.route('/', methods=['POST'])
 def alice_handler():
-    logging.info('Request: %r', request.json)
+    alice_log.info('Request: %r', request.json)
 
     response = {
         "version": request.json['version'],
@@ -53,7 +53,7 @@ def alice_handler():
     #Вызываем обработчик диалога
     response = sessionStorage[user_id].handle_dialog(request.json, response)
 
-    logging.info('Response: %r', response)
+    alice_log.info('Response: %r', response)
 
     return json.dumps(response, ensure_ascii=False, indent=2)
 
